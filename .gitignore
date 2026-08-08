@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Sensitive Credentials & API Keys
+.env
+*.pem
+kaggle.json
+.kaggle/
+
+# Data Directories (Exclude large datasets, include .gitkeep)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# MLflow & DVC
+mlruns/
+.dvc/cache/
+
+# IDE & OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Jupyter Notebook Checkpoints
+.ipynb_checkpoints
