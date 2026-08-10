@@ -1,6 +1,7 @@
 # Hybrid Quantum-Classical AI Platform for Sub-Atomic Molecular Docking & Target Binding Discovery
 
 > **Design Experience — Project 2 (Semesters 5 & 6)**  
+> **Course:** Drug Discovery QML  
 > **Institution:** MPSTME, NMIMS University  
 > **Faculty Mentor:** Prof. Bhavna Bose  
 > **Vertical:** Technical Competition / Commercial Startup Incubation  
@@ -18,7 +19,7 @@ This project builds a commercial-grade **Hybrid Quantum-Classical Decision Suppo
 Whether working individually or in a team, this repository maintains a clean, modular structure so all team members can contribute, track progress, and run experiments.
 
 ```
-Drug_Discovery_QML/
+Drug Discovery QML/
 ├── README.md                          # Main repository guide & team onboarding
 ├── requirements.txt                    # Project dependencies (PennyLane, Qiskit, PyTorch, RDKit)
 ├── .gitignore                          # Excludes large data & sensitive credentials
@@ -47,7 +48,7 @@ Ensure Python 3.10+ is installed on your machine.
 ```bash
 # Clone repository (if fetching from GitHub)
 # git clone <your-repo-url>
-cd Drug_Discovery_QML
+cd "Drug Discovery QML"
 
 # Create & activate virtual environment
 python3 -m venv venv
