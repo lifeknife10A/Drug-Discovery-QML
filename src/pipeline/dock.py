@@ -209,14 +209,14 @@ def _run_worker(mode, jobs, cache_dir, vina_python):
             return json.load(f)
 
 
-def _select_screen_candidates(artifacts_dir, top_n):
+def _select_screen_candidates(artifacts_dir, top_n, models_dir=None, feature_path=None):
     """Top-N candidates by Tier 1 activity probability — docking a bounded,
     already-prioritized slice instead of the full library keeps ensemble
     screening runtime sane (each dock is tens of seconds)."""
     from src.pipeline.rank import _load_tier1_scores  # local import: avoid a hard dependency for prep-only runs
 
-    models_dir = os.path.join(REPO_ROOT, "models")
-    feature_path = os.path.join(REPO_ROOT, "data/processed/egfr_features.parquet")
+    models_dir = models_dir or os.path.join(REPO_ROOT, "models")
+    feature_path = feature_path or os.path.join(REPO_ROOT, "data/processed/egfr_features.parquet")
     try:
         scored = _load_tier1_scores(artifacts_dir, models_dir, feature_path)
     except FileNotFoundError:
@@ -293,7 +293,7 @@ def run_ensemble_screen(prep, receptor_reports, candidates, out_dir, artifacts_d
     return pivot, len(pivot), len(rows)
 
 
-def run_docking(pdb_dir=None, artifacts_dir=None, smoke=False):
+def run_docking(pdb_dir=None, artifacts_dir=None, models_dir=None, feature_path=None, smoke=False):
     """Tier 2 entrypoint: prep targets, then dock + validate if the vina-docking env is present."""
     pdb_dir = pdb_dir or os.path.join(REPO_ROOT, "data/raw/pdb")
     artifacts_dir = artifacts_dir or os.path.join(REPO_ROOT, "artifacts")
@@ -333,7 +333,7 @@ def run_docking(pdb_dir=None, artifacts_dir=None, smoke=False):
     n_targets, n_pass = len(redocking), sum(1 for r in redocking.values() if r.get("rmsd_pass"))
     print(f"[dock] redocking validation: {n_pass}/{n_targets} targets pass RMSD < 2.0 A")
 
-    candidates = _select_screen_candidates(artifacts_dir, top_n)
+    candidates = _select_screen_candidates(artifacts_dir, top_n, models_dir=models_dir, feature_path=feature_path)
     if candidates:
         _, n_scored, n_jobs = run_ensemble_screen(
             prep, receptor_reports, candidates, out_dir, artifacts_dir, vina_python,

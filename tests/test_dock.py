@@ -6,6 +6,7 @@ import pytest
 
 from src.pipeline import dock
 from src.pipeline.dock import (
+    _select_screen_candidates,
     compute_grid_box,
     find_ligand_resname,
     parse_pdb_records,
@@ -133,6 +134,25 @@ def test_run_ensemble_screen_writes_docking_scores_and_flips_affinity_sign(tmp_p
     assert out_path.exists()
     on_disk = pd.read_csv(out_path)
     assert set(on_disk["molecule_chembl_id"]) == {"CHEMBL1", "CHEMBL2"}
+
+
+def test_select_screen_candidates_uses_passed_models_dir_not_repo_root(tiny_feature_parquet, tmp_path):
+    # Regression: _select_screen_candidates used to hardcode REPO_ROOT/models and the real
+    # egfr_features.parquet instead of honoring caller-supplied paths, so a tmp-dir test setup
+    # would load the wrong (2055-feature) production model against a tiny (39-feature) parquet.
+    from src.models.train import run_tier1
+
+    models_dir = str(tmp_path / "models")
+    artifacts_dir = str(tmp_path / "artifacts")
+    run_tier1(tiny_feature_parquet, models_dir, artifacts_dir, n_boot=20)
+
+    candidates = _select_screen_candidates(
+        artifacts_dir, top_n=3, models_dir=models_dir, feature_path=tiny_feature_parquet
+    )
+
+    assert len(candidates) == 3
+    assert "molecule_chembl_id" in candidates[0]
+    assert "canonical_smiles" in candidates[0]
 
 
 def test_run_ensemble_screen_returns_none_with_no_jobs(tmp_path):

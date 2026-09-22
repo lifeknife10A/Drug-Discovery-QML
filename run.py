@@ -44,7 +44,7 @@ def run_dock(smoke: bool = False):
 
 def run_quantum(smoke: bool = False):
     try:
-        from src.quantum import run_tier3_benchmark
+        from src.quantum import run_quantum_scores, run_tier3_benchmark
     except ImportError as e:
         print(f"[quantum] skipping: src/quantum benchmark module not importable ({e})")
         return
@@ -53,6 +53,7 @@ def run_quantum(smoke: bool = False):
         return
     print(f"[quantum] running Tier 3 classical vs NISQ quantum kernel benchmark (smoke={smoke})...")
     run_tier3_benchmark(FEATURE_PATH, ARTIFACTS_DIR, smoke=smoke)
+    run_quantum_scores(FEATURE_PATH, ARTIFACTS_DIR, smoke=smoke)
 
 
 def run_admet(smoke: bool = False):

@@ -27,6 +27,7 @@ from src.quantum.negative_controls import (
     run_y_scramble_control,
 )
 from src.quantum.run_benchmark import run_tier3_benchmark
+from src.quantum.score import run_quantum_scores
 
 
 @pytest.fixture
@@ -242,3 +243,49 @@ def test_full_benchmark_smoke(tmp_path, mock_dataset):
     assert "hardware_concordance_20x20" in results
     assert os.path.exists(os.path.join(artifacts_dir, "tier3_kernel_benchmark.json"))
     assert os.path.exists(os.path.join(artifacts_dir, "tier3_kernel_benchmark.csv"))
+
+
+def test_run_quantum_scores_writes_csv(tiny_feature_parquet, tmp_path):
+    from src.models.train import run_tier1
+
+    models_dir = str(tmp_path / "models")
+    artifacts_dir = str(tmp_path / "artifacts")
+    run_tier1(tiny_feature_parquet, models_dir, artifacts_dir, n_boot=20)
+
+    scores = run_quantum_scores(
+        tiny_feature_parquet, artifacts_dir, models_dir=models_dir,
+        top_n=5, n_qubits=4, max_train_size=10, seed=42,
+    )
+
+    assert scores is not None
+    assert "molecule_chembl_id" in scores.columns
+    assert "quantum_score" in scores.columns
+    assert scores["quantum_score"].between(0.0, 1.0).all()
+
+    out_path = os.path.join(artifacts_dir, "quantum_scores.csv")
+    assert os.path.exists(out_path)
+
+
+def test_run_quantum_scores_skips_without_tier1_ranking(tiny_feature_parquet, tmp_path):
+    artifacts_dir = str(tmp_path / "empty_artifacts")
+    os.makedirs(artifacts_dir, exist_ok=True)
+    assert run_quantum_scores(tiny_feature_parquet, artifacts_dir, top_n=5) is None
+
+
+def test_run_quantum_scores_skips_without_feature_file(tmp_path):
+    assert run_quantum_scores(str(tmp_path / "missing.parquet"), str(tmp_path / "artifacts")) is None
+
+
+def test_run_quantum_scores_feeds_rank_dss(tiny_feature_parquet, tmp_path):
+    from src.models.train import run_tier1
+    from src.pipeline.rank import run_rank
+
+    models_dir = str(tmp_path / "models")
+    artifacts_dir = str(tmp_path / "artifacts")
+    run_tier1(tiny_feature_parquet, models_dir, artifacts_dir, n_boot=20)
+    run_quantum_scores(
+        tiny_feature_parquet, artifacts_dir, models_dir=models_dir, top_n=5, max_train_size=10, seed=42
+    )
+
+    ranking = run_rank(artifacts_dir, models_dir=models_dir, feature_path=tiny_feature_parquet, top_n=3)
+    assert "tier3_quantum" in ranking.columns

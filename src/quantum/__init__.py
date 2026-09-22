@@ -14,6 +14,7 @@ from src.quantum.negative_controls import (
     run_y_scramble_control,
 )
 from src.quantum.run_benchmark import run_tier3_benchmark
+from src.quantum.score import run_quantum_scores
 
 __all__ = [
     "compress_features",
@@ -27,4 +28,5 @@ __all__ = [
     "run_feature_permutation_control",
     "run_random_circuit_control",
     "run_tier3_benchmark",
+    "run_quantum_scores",
 ]
