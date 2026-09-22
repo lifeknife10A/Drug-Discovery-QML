@@ -1,6 +1,6 @@
 import pytest
 import pandas as pd
-from src.pipeline.admet import ADMETPredictor
+from src.pipeline.admet import ADMETPredictor, run_admet, score_admet_row
 
 def test_admet_predictor_valid_smiles():
     predictor = ADMETPredictor()
@@ -42,3 +42,36 @@ def test_process_dataframe():
     assert 'pains_alert' in out_df.columns
     assert len(out_df) == 2
     assert bool(out_df.iloc[1]['pains_alert']) is True
+
+
+def test_score_admet_row_penalizes_liabilities_and_sascore():
+    clean = pd.Series({"sascore": 2.0, "pains_alert": False, "brenk_alert": False,
+                        "herg_liability": False, "cyp_liability": False, "poor_solubility": False})
+    risky = pd.Series({"sascore": 8.0, "pains_alert": True, "brenk_alert": True,
+                        "herg_liability": True, "cyp_liability": False, "poor_solubility": False})
+    assert 0.0 <= score_admet_row(clean) <= 1.0
+    assert 0.0 <= score_admet_row(risky) <= 1.0
+    assert score_admet_row(clean) > score_admet_row(risky)
+
+
+def test_score_admet_row_missing_sascore_is_neutral():
+    row = pd.Series({"sascore": None, "pains_alert": False, "brenk_alert": False,
+                      "herg_liability": False, "cyp_liability": False, "poor_solubility": False})
+    assert score_admet_row(row) == 0.75  # 0.5*0.5(neutral) + 0.5*1.0(no liabilities)
+
+
+def test_run_admet_writes_scores_csv(tiny_feature_parquet, tmp_path):
+    artifacts_dir = str(tmp_path / "artifacts")
+    scored = run_admet(tiny_feature_parquet, artifacts_dir, smoke=True)
+
+    assert scored is not None
+    assert "molecule_chembl_id" in scored.columns
+    assert "admet_score" in scored.columns
+    assert scored["admet_score"].between(0.0, 1.0).all()
+
+    out_path = tmp_path / "artifacts" / "admet_scores.csv"
+    assert out_path.exists()
+
+
+def test_run_admet_skips_when_feature_file_missing(tmp_path):
+    assert run_admet(str(tmp_path / "missing.parquet"), str(tmp_path / "artifacts")) is None

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pipeline entrypoint: python run.py <stage>
 
-Stages: data | tier1 | dock | quantum | rank | all
+Stages: data | tier1 | dock | quantum | admet | rank | all
 Each stage skips gracefully with a notice if its module is not implemented yet.
 """
 
@@ -55,6 +55,18 @@ def run_quantum(smoke: bool = False):
     run_tier3_benchmark(FEATURE_PATH, ARTIFACTS_DIR, smoke=smoke)
 
 
+def run_admet(smoke: bool = False):
+    try:
+        from src.pipeline.admet import run_admet as _run_admet
+    except ImportError as e:
+        print(f"[admet] skipping: src/pipeline/admet.py not importable ({e})")
+        return
+    if not os.path.exists(FEATURE_PATH):
+        print(f"[admet] skipping: {FEATURE_PATH} not found.")
+        return
+    _run_admet(FEATURE_PATH, ARTIFACTS_DIR, smoke=smoke)
+
+
 def run_rank(smoke: bool = False):
     try:
         from src.pipeline.rank import run_rank as _run_rank
@@ -69,6 +81,7 @@ STAGES = {
     "tier1": run_tier1,
     "dock": run_dock,
     "quantum": run_quantum,
+    "admet": run_admet,
     "rank": run_rank,
 }
 
@@ -77,7 +90,7 @@ def main():
     parser = argparse.ArgumentParser(description="Drug Discovery QML pipeline runner")
     parser.add_argument(
         "stage",
-        choices=["data", "tier1", "dock", "quantum", "rank", "all"],
+        choices=["data", "tier1", "dock", "quantum", "admet", "rank", "all"],
         help="Pipeline stage to run",
     )
     parser.add_argument(

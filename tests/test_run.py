@@ -29,3 +29,9 @@ def test_quantum_stage_does_not_crash():
 def test_invalid_stage_rejected():
     result = _run_stage("not_a_real_stage")
     assert result.returncode != 0
+
+
+def test_admet_stage_does_not_crash():
+    result = _run_stage("admet", extra_args=["--smoke"])
+    assert result.returncode == 0
+    assert "[admet]" in result.stdout
