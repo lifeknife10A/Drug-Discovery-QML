@@ -77,6 +77,23 @@ This project uses **100% free cloud resources**. Follow the setup guide below to
    mkdir -p ~/.kaggle && cp ~/Downloads/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
    ```
 
+### 3. Tier 2 Docking Tooling (AutoDock Vina, separate env)
+
+AutoDock Vina's Python bindings only ship wheels/conda builds up to Python
+3.10, one version behind this project's main environment — so they live in
+their own conda env instead of `requirements.txt`. Without this env,
+`run.py dock` still preps receptors/ligands and grid boxes; it just skips
+the actual docking with a clear notice.
+
+```bash
+conda create -n vina-docking -c conda-forge python=3.10 vina -y
+conda install -n vina-docking -c conda-forge rdkit meeko prolif numpy pandas -y
+```
+
+`src/pipeline/dock.py` looks for that env at
+`/opt/anaconda3/envs/vina-docking/bin/python` by default; point it elsewhere
+with `VINA_DOCKING_PYTHON=/path/to/vina-docking/bin/python`.
+
 ---
 
 ## 🚀 5-Phase Implementation Roadmap
