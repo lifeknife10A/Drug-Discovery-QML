@@ -1,31 +1,43 @@
 #!/usr/bin/env python3
 """
-Phase 1: RDKit Feature Extraction & Molecular Representation Engine
-Extracts 2048-bit Morgan Fingerprints (ECFP4) and Physicochemical Descriptors
+Tier 1 featurization: 2048-bit Morgan (ECFP4) fingerprints + 7 physicochemical
+descriptors for every compound.
+
+Uses the current RDKit ``rdFingerprintGenerator.GetMorganGenerator`` API
+(``AllChem.GetMorganFingerprintAsBitVect`` is deprecated).
 """
+
+from __future__ import annotations
 
 import os
 import sys
-import pandas as pd
+
 import numpy as np
-
+import pandas as pd
 from rdkit import Chem
-from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
+from rdkit.Chem import Descriptors, rdFingerprintGenerator, rdMolDescriptors
 
-def calculate_rdkit_features(smiles):
-    """
-    Computes 2048-bit Morgan Fingerprint and 6 key physicochemical descriptors for a SMILES string.
-    """
+FP_BITS = 2048
+FP_RADIUS = 2
+_MORGAN_GEN = rdFingerprintGenerator.GetMorganGenerator(radius=FP_RADIUS, fpSize=FP_BITS)
+
+DESC_ORDER = ["mw", "logp", "hbd", "hba", "tpsa", "rotatable_bonds", "aromatic_rings"]
+ID_COLS = ["molecule_chembl_id", "canonical_smiles", "pIC50", "is_active"]
+CARRY_COLS = ["variant", "n_measurements", "document_year"]  # kept if present
+
+
+def calculate_rdkit_features(smiles: str):
+    """Return (fp_uint8_array[2048], descriptor_dict) or (None, None) on parse failure."""
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None, None
-        
-    # 1. 2048-bit Morgan Fingerprint (Radius 2 = ECFP4)
-    fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
-    fp_array = np.zeros((2048,), dtype=np.int8)
-    AllChem.DataStructs.ConvertToNumpyArray(fp, fp_array)
-    
-    # 2. Key Physicochemical Descriptors (Lipinski's Rule of 5 parameters + TPSA)
+
+    fp = _MORGAN_GEN.GetFingerprint(mol)
+    fp_array = np.zeros((FP_BITS,), dtype=np.int8)
+    from rdkit.DataStructs import ConvertToNumpyArray
+
+    ConvertToNumpyArray(fp, fp_array)
+
     descriptors = {
         "mw": Descriptors.MolWt(mol),
         "logp": Descriptors.MolLogP(mol),
@@ -33,62 +45,51 @@ def calculate_rdkit_features(smiles):
         "hba": Descriptors.NumHAcceptors(mol),
         "tpsa": Descriptors.TPSA(mol),
         "rotatable_bonds": Descriptors.NumRotatableBonds(mol),
-        "aromatic_rings": rdMolDescriptors.CalcNumAromaticRings(mol)
+        "aromatic_rings": rdMolDescriptors.CalcNumAromaticRings(mol),
     }
-    
     return fp_array, descriptors
 
-def process_dataset(input_parquet_path, output_parquet_path):
-    """
-    Processes the raw SMILES dataset and builds the final feature matrix.
-    """
-    print(f"[+] Reading dataset from {input_parquet_path}...")
+
+def process_dataset(input_parquet_path: str, output_parquet_path: str) -> pd.DataFrame:
+    print(f"[+] Reading {input_parquet_path}...")
     df = pd.read_parquet(input_parquet_path)
-    
-    fps = []
-    descriptor_list = []
-    valid_indices = []
-    
-    print(f"[+] Calculating RDKit features for {len(df)} compounds...")
+
+    fps, descs, keep = [], [], []
+    print(f"[+] Featurizing {len(df)} compounds (MorganGenerator, {FP_BITS} bits, r={FP_RADIUS})...")
     for idx, row in df.iterrows():
-        smiles = row["canonical_smiles"]
-        fp, desc = calculate_rdkit_features(smiles)
-        
-        if fp is not None and desc is not None:
+        fp, desc = calculate_rdkit_features(row["canonical_smiles"])
+        if fp is not None:
             fps.append(fp)
-            descriptor_list.append(desc)
-            valid_indices.append(idx)
-            
-    # Filter valid molecules
-    df_valid = df.loc[valid_indices].reset_index(drop=True)
-    
-    # Create Fingerprint DataFrame
-    fp_columns = [f"fp_{i}" for i in range(2048)]
-    df_fp = pd.DataFrame(fps, columns=fp_columns)
-    
-    # Create Descriptors DataFrame
-    df_desc = pd.DataFrame(descriptor_list)
-    
-    # Combine into single feature matrix
-    df_features = pd.concat([df_valid[["molecule_chembl_id", "canonical_smiles", "pIC50", "is_active"]], df_desc, df_fp], axis=1)
-    
-    print(f"[+] Successfully featurized {len(df_features)} valid molecules.")
-    print(f"[+] Total feature columns: {df_features.shape[1]}")
-    
+            descs.append(desc)
+            keep.append(idx)
+
+    df_valid = df.loc[keep].reset_index(drop=True)
+    id_cols = [c for c in ID_COLS + CARRY_COLS if c in df_valid.columns]
+
+    df_desc = pd.DataFrame(descs)[DESC_ORDER]
+    df_fp = pd.DataFrame(fps, columns=[f"fp_{i}" for i in range(FP_BITS)])
+    df_features = pd.concat([df_valid[id_cols], df_desc, df_fp], axis=1)
+
+    print(f"[+] {len(df_features)} valid molecules, {df_features.shape[1]} columns")
     df_features.to_parquet(output_parquet_path, index=False)
-    print(f"[✓] Feature matrix saved to {output_parquet_path}")
+    print(f"[OK] {output_parquet_path}")
     return df_features
 
-def main():
-    base_dir = os.path.join(os.path.dirname(__file__), "../../data/processed")
-    input_path = os.path.join(base_dir, "egfr_compounds_clean.parquet")
-    output_path = os.path.join(base_dir, "egfr_features.parquet")
-    
-    if not os.path.exists(input_path):
-        print(f"[!] Input file {input_path} not found. Please run fetch_chembl_data.py first.")
+
+def main() -> None:
+    base = os.path.join(os.path.dirname(__file__), "../../data/processed")
+    inp = os.path.join(base, "egfr_compounds_clean.parquet")
+    out = os.path.join(base, "egfr_features.parquet")
+    if not os.path.exists(inp):
+        print(f"[!] {inp} not found. Run fetch_chembl_data.py first.")
         sys.exit(1)
-        
-    process_dataset(input_path, output_path)
+    process_dataset(inp, out)
+
+    # Also featurize the full variant table when it exists (for the selectivity model).
+    var_in = os.path.join(base, "egfr_by_variant.parquet")
+    if os.path.exists(var_in):
+        process_dataset(var_in, os.path.join(base, "egfr_features_by_variant.parquet"))
+
 
 if __name__ == "__main__":
     main()

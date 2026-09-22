@@ -32,3 +32,16 @@ mlruns/
 
 # Jupyter Notebook Checkpoints
 .ipynb_checkpoints
+
+# Internal docs / generated artifacts / hive coordination
+docs/
+models/
+artifacts/
+hive/
+
+# Local agent-orchestrator / memory-recall tool state (not project deliverables)
+roster.json
+roster-backups/
+palace/
+hallways.json
+:memory:.ses

@@ -1,107 +1,175 @@
 #!/usr/bin/env python3
 """
-Phase 1: ChEMBL Target Bioactivity Data Fetcher
-Target: EGFR (Epidermal Growth Factor Receptor - CHEMBL203)
-Disease Domain: Oncology / Lung Cancer & Glioblastoma
+Tier 1 data ingestion: EGFR bioactivity from the ChEMBL REST API.
+
+Target CHEMBL203 (human EGFR kinase domain). ChEMBL stores wild-type and
+resistance-mutant measurements under the SAME target id, distinguished at the
+assay level by ``assay_variant_mutation`` (e.g. "T790M", "L858R,T790M",
+"L858R,T790M,C797S"). This fetcher captures that field and buckets every IC50
+record into a canonical variant so downstream code can model mutant activity and
+mutant-vs-WT selectivity.
+
+Outputs (data/processed/):
+  egfr_compounds_clean.parquet/.csv  - combined, one row per (compound, variant)
+  egfr_by_variant.parquet            - same, kept explicitly for the variant split
+  chembl_raw_activities.parquet      - the raw pull, for provenance
+  ingestion_summary.json             - counts per variant + dataset hash
+
+There is NO synthetic fallback. If the API returns nothing, this raises.
 """
 
+from __future__ import annotations
+
+import hashlib
+import json
 import os
 import sys
-import pandas as pd
-import numpy as np
-import requests
 import time
 
-def fetch_egfr_chembl_data(target_chembl_id="CHEMBL203", max_records=20000):
-    """
-    Fetches IC50 bioactivity data for target protein from ChEMBL REST API.
-    """
-    print(f"[+] Querying ChEMBL API for target: {target_chembl_id} (EGFR)...")
-    
-    url = f"https://www.ebi.ac.uk/chembl/api/data/activity.json?target_chembl_id={target_chembl_id}&standard_type=IC50&limit=1000"
-    
-    activities = []
-    page = 0
-    
-    while url and len(activities) < max_records:
-        page += 1
-        print(f"    Fetching page {page} ({len(activities)} records so far)...")
-        try:
-            res = requests.get(url, timeout=15)
-            if res.status_code != 200:
-                print(f"    [!] Warning: API returned status code {res.status_code}")
-                break
-            data = res.json()
-            
-            for item in data.get("activities", []):
-                canonical_smiles = item.get("canonical_smiles")
-                standard_value = item.get("standard_value")
-                standard_units = item.get("standard_units")
-                molecule_chembl_id = item.get("molecule_chembl_id")
-                standard_relation = item.get("standard_relation")
-                
-                if canonical_smiles and standard_value is not None and standard_units == "nM":
-                    try:
-                        val_nm = float(standard_value)
-                        if val_nm > 0:
-                            # Convert IC50 in nM to pIC50 = -log10(IC50 in M)
-                            val_molar = val_nm * 1e-9
-                            pic50 = -np.log10(val_molar)
-                            
-                            activities.append({
-                                "molecule_chembl_id": molecule_chembl_id,
-                                "canonical_smiles": canonical_smiles,
-                                "standard_value_nm": val_nm,
-                                "relation": standard_relation,
-                                "pIC50": pic50,
-                                "is_active": 1 if pic50 >= 6.0 else 0  # IC50 <= 1000 nM = Active
-                            })
-                    except ValueError:
-                        continue
-            
-            # Next page
-            next_url = data.get("page_meta", {}).get("next")
-            if next_url:
-                url = "https://www.ebi.ac.uk" + next_url
-            else:
-                url = None
-                
-            time.sleep(0.1) # Be gentle on EBI servers
-            
-        except Exception as e:
-            print(f"    [!] Error during API request: {e}")
-            break
+import numpy as np
+import pandas as pd
+import requests
 
-    df = pd.DataFrame(activities)
-    print(f"\n[+] Raw records retrieved: {len(df)}")
-    
-    if len(df) == 0:
-        print("[!] No records fetched via API. Generating robust fallback dataset from ChEMBL EGFR benchmarks...")
-        return None
-        
-    # Drop duplicates by SMILES keeping highest pIC50
-    df = df.sort_values(by="pIC50", ascending=False).drop_duplicates(subset=["canonical_smiles"]).reset_index(drop=True)
-    print(f"[+] Unique SMILES compounds: {len(df)}")
-    print(f"[+] Active compounds (pIC50 >= 6.0 / IC50 <= 1uM): {(df['is_active'] == 1).sum()}")
-    print(f"[+] Inactive compounds (pIC50 < 6.0): {(df['is_active'] == 0).sum()}")
-    
+BASE = "https://www.ebi.ac.uk"
+TARGET = "CHEMBL203"
+OUT_DIR = os.path.join(os.path.dirname(__file__), "../../data/processed")
+
+# Canonical variant buckets, matched case/'/'-insensitively against the raw
+# assay_variant_mutation string (which uses commas and varies in ordering).
+VARIANT_RULES = [
+    ("L858R/T790M/C797S", {"L858R", "T790M", "C797S"}),
+    ("T790M/C797S", {"T790M", "C797S"}),
+    ("L858R/T790M", {"L858R", "T790M"}),
+    ("T790M", {"T790M"}),
+    ("L858R", {"L858R"}),
+    ("del19", {"DEL19"}),
+]
+
+
+def canonical_variant(mutation_str: str | None) -> str:
+    """Map a raw ChEMBL assay_variant_mutation string to a canonical bucket."""
+    if not mutation_str or not str(mutation_str).strip():
+        return "WT"
+    toks = {t.strip().upper() for t in str(mutation_str).replace("/", ",").split(",") if t.strip()}
+    for name, needed in VARIANT_RULES:
+        if needed.issubset(toks):
+            return name
+    return "other_mutant"
+
+
+def fetch_egfr_activities(target_chembl_id: str = TARGET, max_records: int = 60000) -> pd.DataFrame:
+    """Page through every IC50 activity for the target, keeping variant annotation."""
+    url = (
+        f"{BASE}/chembl/api/data/activity.json"
+        f"?target_chembl_id={target_chembl_id}&standard_type=IC50&limit=1000"
+    )
+    rows: list[dict] = []
+    page = 0
+    while url and len(rows) < max_records:
+        page += 1
+        print(f"    page {page}  ({len(rows)} records)...")
+        res = requests.get(url, timeout=30)
+        res.raise_for_status()
+        data = res.json()
+        for item in data.get("activities", []):
+            smiles = item.get("canonical_smiles")
+            value = item.get("standard_value")
+            units = item.get("standard_units")
+            if not (smiles and value is not None and units == "nM"):
+                continue
+            try:
+                val_nm = float(value)
+            except (TypeError, ValueError):
+                continue
+            if val_nm <= 0:
+                continue
+            pic50 = -np.log10(val_nm * 1e-9)
+            rows.append({
+                "molecule_chembl_id": item.get("molecule_chembl_id"),
+                "canonical_smiles": smiles,
+                "assay_chembl_id": item.get("assay_chembl_id"),
+                "assay_variant_mutation": item.get("assay_variant_mutation"),
+                "variant": canonical_variant(item.get("assay_variant_mutation")),
+                "standard_value_nm": val_nm,
+                "relation": item.get("standard_relation"),
+                "pIC50": pic50,
+                "is_active": 1 if pic50 >= 6.0 else 0,  # IC50 <= 1 uM
+                "document_year": item.get("document_year"),
+            })
+        nxt = data.get("page_meta", {}).get("next")
+        url = BASE + nxt if nxt else None
+        time.sleep(0.1)
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        raise RuntimeError(
+            f"ChEMBL returned zero usable IC50 records for {target_chembl_id}. "
+            "Refusing to continue with no data (no synthetic fallback)."
+        )
     return df
 
-def main():
-    output_dir = os.path.join(os.path.dirname(__file__), "../../data/processed")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    df = fetch_egfr_chembl_data(max_records=10000)
-    
-    if df is not None and not df.empty:
-        parquet_path = os.path.join(output_dir, "egfr_compounds_clean.parquet")
-        csv_path = os.path.join(output_dir, "egfr_compounds_clean.csv")
-        
-        df.to_parquet(parquet_path, index=False)
-        df.to_csv(csv_path, index=False)
-        print(f"\n[✓] Phase 1 Ingestion Complete!")
-        print(f"    - Parquet file saved: {parquet_path}")
-        print(f"    - CSV backup saved: {csv_path}")
+
+def collapse_duplicates(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per (compound, variant): median pIC50 across replicate assays."""
+    agg = (
+        df.groupby(["molecule_chembl_id", "canonical_smiles", "variant"], as_index=False)
+        .agg(
+            pIC50=("pIC50", "median"),
+            standard_value_nm=("standard_value_nm", "median"),
+            n_measurements=("pIC50", "size"),
+            document_year=("document_year", "min"),
+        )
+    )
+    agg["is_active"] = (agg["pIC50"] >= 6.0).astype(int)
+    return agg.sort_values(["variant", "pIC50"], ascending=[True, False]).reset_index(drop=True)
+
+
+def main() -> None:
+    os.makedirs(OUT_DIR, exist_ok=True)
+    print(f"[+] Fetching EGFR ({TARGET}) IC50 activities from ChEMBL...")
+    raw = fetch_egfr_activities()
+    print(f"[+] Raw usable records: {len(raw)}")
+
+    raw.to_parquet(os.path.join(OUT_DIR, "chembl_raw_activities.parquet"), index=False)
+
+    clean = collapse_duplicates(raw)
+    counts = clean["variant"].value_counts().to_dict()
+    print("[+] Compounds per variant bucket:")
+    for k, v in counts.items():
+        act = int(clean.loc[clean.variant == k, "is_active"].sum())
+        print(f"      {k:22s} {v:6d}   (active {act})")
+
+    # Combined table (all variants) + explicit variant-split copy.
+    clean.to_parquet(os.path.join(OUT_DIR, "egfr_by_variant.parquet"), index=False)
+
+    # Backwards-compatible primary file = WT rows only (what Tier 1 has always used).
+    wt = clean[clean.variant == "WT"].drop(columns=["variant"]).reset_index(drop=True)
+    wt.to_parquet(os.path.join(OUT_DIR, "egfr_compounds_clean.parquet"), index=False)
+    wt.to_csv(os.path.join(OUT_DIR, "egfr_compounds_clean.csv"), index=False)
+
+    ds_hash = hashlib.sha256(
+        "\n".join(sorted(clean["canonical_smiles"].astype(str))).encode()
+    ).hexdigest()[:16]
+    summary = {
+        "target": TARGET,
+        "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "n_raw_records": int(len(raw)),
+        "n_compound_variant_rows": int(len(clean)),
+        "variant_counts": counts,
+        "variant_active_counts": {
+            k: int(clean.loc[clean.variant == k, "is_active"].sum()) for k in counts
+        },
+        "dataset_hash": ds_hash,
+        "notes": "assay_variant_mutation bucketed via canonical_variant(); "
+                 "duplicates collapsed to median pIC50 per (compound, variant).",
+    }
+    with open(os.path.join(OUT_DIR, "ingestion_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"\n[OK] WT primary file: {len(wt)} compounds -> egfr_compounds_clean.parquet")
+    print(f"[OK] Variant split:   {len(clean)} rows -> egfr_by_variant.parquet")
+    print(f"[OK] Summary:          data/processed/ingestion_summary.json")
+
 
 if __name__ == "__main__":
     main()
