@@ -58,7 +58,37 @@ Out of **13,033 screened molecules**, our multi-tier DSS prioritized **`CHEMBL45
 | | RBF-SVM Classifier | **ROC-AUC: 0.9050** (PR-AUC: 0.9515) | Y-Scramble ROC-AUC: **0.4909** |
 | **Tier 2 (Selectivity)** | Paired WT vs C797S Screen | **223 Mutant-Selective Hits** (out of 309 pairs) | Sparing Wild-Type `4WKQ` |
 | **Tier 3 (Quantum QML)** | 8-Qubit Fidelity QSVC ($K_{\text{FQ}}$) | **ROC-AUC: 0.8322** (PR-AUC: 0.8581) | Classical RBF-SVM: **0.8240** |
-| **Test Suite** | Pytest Suite | **49 / 49 Passed** (100% test pass rate) | 0 Failures |
+| **Test Suite** | Pytest Suite | **49 passed, 1 skipped** | Skipped = real-Vina test (opt-in via `RUN_VINA_TESTS=1`) |
+
+> **Note:** the test suite validates pipeline *mechanics* (I/O contracts, weight
+> renormalization, scaffold-split integrity) on small synthetic fixtures with randomized
+> labels. It does **not** assert the scientific benchmark numbers above — those are produced
+> only by running the full pipeline on the real ChEMBL dataset (see Reproducibility below).
+
+---
+
+## 🔬 Reproducibility & Data Availability
+
+To keep the repository lightweight, the following are **generated locally and not committed**
+(they are listed in `.gitignore`): `data/raw/`, `data/processed/`, `models/`, and `artifacts/`.
+
+As a result, the headline figures in this README — ROC-AUC values, docking affinities, and the
+`CHEMBL4575267` lead candidate — are **outputs of the authors' pipeline runs, not files shipped
+in this repo**. To reproduce them you must fetch the ChEMBL EGFR data and run the tiers in order:
+
+```bash
+python3 -m src.data.fetch_chembl_data      # download raw ChEMBL bioactivities
+python3 -m src.data.extract_features       # -> data/processed/egfr_features.parquet
+python3 run.py tier1                        # -> models/*.joblib, artifacts/tier1_metrics.json
+python3 run.py quantum                      # -> artifacts/quantum_scores.csv, tier3 benchmark
+python3 run.py admet                        # -> artifacts/admet_scores.csv
+python3 run.py rank                         # -> artifacts/top_candidates.csv
+```
+
+**Tier 2 (docking)** additionally requires a separate `vina-docking` conda env (AutoDock Vina +
+Meeko) and the PDB structures under `data/raw/pdb/`; without it, `run.py dock` skips gracefully
+and the DSS score renormalizes over the remaining tiers. Exact numbers may vary with dataset
+snapshot, library versions, and docking hardware.
 
 ---
 
@@ -87,7 +117,7 @@ Drug Discovery QML/
 │   ├── quantum/                       # PennyLane Fidelity Quantum Kernel (KFQ) & ZNE simulation
 │   ├── pipeline/                      # Docking prep, selectivity, ADMET, & DSS ranking
 │   └── api/                           # FastAPI REST backend & Streamlit web dashboard
-└── tests/                             # Automated test suite (50 test cases, 49 passed)
+└── tests/                             # Automated test suite (49 passed, 1 skipped)
 ```
 
 ---
@@ -118,9 +148,9 @@ python3 -m pytest tests/ -v
 # Run the complete 4-tier pipeline
 python3 run.py all
 
-# Or run individual stages:
-python3 run.py data       # Stage 1: Data ingestion & featurization
-python3 run.py train      # Stage 2: Classical ML baseline training
+# Or run individual stages (names must match run.py exactly):
+python3 run.py data       # Stage 1: Data ingestion & featurization (manual; see note below)
+python3 run.py tier1      # Stage 2: Classical ML baseline training (Tier 1)
 python3 run.py dock       # Stage 3: 3D docking grid preparation & selectivity
 python3 run.py quantum    # Stage 4: PennyLane Quantum Kernel benchmark
 python3 run.py admet      # Stage 5: ADMET & SAScore synthesizability filtering

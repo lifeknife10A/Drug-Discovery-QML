@@ -34,10 +34,11 @@ mlruns/
 .ipynb_checkpoints
 
 # Internal docs / generated artifacts / hive coordination
-docs/
-models/
-artifacts/
-hive/
+# Anchored to repo root so source packages like src/models/ are NOT ignored.
+/docs/
+/models/
+/artifacts/
+/hive/
 
 # Local agent-orchestrator / memory-recall tool state (not project deliverables)
 roster.json
