@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pipeline entrypoint: python run.py <stage>
 
-Stages: data | tier1 | dock | quantum | admet | rank | all
+Stages: data | tier1 | dock | selectivity | quantum | admet | rank | all
 Each stage skips gracefully with a notice if its module is not implemented yet.
 """
 
@@ -18,7 +18,26 @@ ARTIFACTS_DIR = os.path.join(REPO_ROOT, "artifacts")
 
 
 def run_data(smoke: bool = False):
-    print("[data] skipping: src/data pipeline is owned by Kelly; run manually if needed.")
+    """Fetch ChEMBL EGFR bioactivities and featurize them.
+
+    Requires outbound network access to the ChEMBL API. Skips gracefully (with a
+    notice) if the features already exist or if the fetch/featurize step fails,
+    so `run.py all` never hard-crashes on a restricted network.
+    """
+    if os.path.exists(FEATURE_PATH):
+        print(f"[data] features already present at {FEATURE_PATH} — skipping fetch/featurize.")
+        return
+    try:
+        from src.data.fetch_chembl_data import main as fetch_main
+        from src.data.extract_features import main as extract_main
+    except ImportError as e:
+        print(f"[data] skipping: src/data modules not importable ({e}).")
+        return
+    try:
+        fetch_main()
+        extract_main()
+    except Exception as e:  # network failure, API change, etc. — don't crash the pipeline
+        print(f"[data] skipping: ChEMBL fetch/featurize failed ({type(e).__name__}: {e}).")
 
 
 def run_tier1(smoke: bool = False):
@@ -40,6 +59,15 @@ def run_dock(smoke: bool = False):
         print(f"[dock] skipping: src/pipeline/dock.py not importable ({e})")
         return
     _run_docking(artifacts_dir=ARTIFACTS_DIR, smoke=smoke)
+
+
+def run_selectivity(smoke: bool = False):
+    try:
+        from src.pipeline.selectivity import run_selectivity as _run_selectivity
+    except ImportError as e:
+        print(f"[selectivity] skipping: src/pipeline/selectivity.py not importable ({e})")
+        return
+    _run_selectivity(artifacts_dir=ARTIFACTS_DIR, smoke=smoke)
 
 
 def run_quantum(smoke: bool = False):
@@ -74,13 +102,17 @@ def run_rank(smoke: bool = False):
     except ImportError as e:
         print(f"[rank] skipping: src/pipeline/rank.py not importable ({e})")
         return
-    _run_rank(ARTIFACTS_DIR)
+    try:
+        _run_rank(ARTIFACTS_DIR)
+    except FileNotFoundError as e:
+        print(f"[rank] skipping: Tier 1 outputs missing ({e}). Run `run.py tier1` first.")
 
 
 STAGES = {
     "data": run_data,
     "tier1": run_tier1,
     "dock": run_dock,
+    "selectivity": run_selectivity,
     "quantum": run_quantum,
     "admet": run_admet,
     "rank": run_rank,
@@ -91,7 +123,7 @@ def main():
     parser = argparse.ArgumentParser(description="Drug Discovery QML pipeline runner")
     parser.add_argument(
         "stage",
-        choices=["data", "tier1", "dock", "quantum", "admet", "rank", "all"],
+        choices=["data", "tier1", "dock", "selectivity", "quantum", "admet", "rank", "all"],
         help="Pipeline stage to run",
     )
     parser.add_argument(

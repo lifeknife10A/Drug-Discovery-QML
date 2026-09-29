@@ -153,12 +153,24 @@ def score_all_compounds(feat_wt: pd.DataFrame) -> pd.DataFrame:
     })
 
 
-def main() -> None:
-    os.makedirs(ARTIFACTS, exist_ok=True)
-    by_variant = pd.read_parquet(os.path.join(PROC, "egfr_by_variant.parquet"))
+def run_selectivity(artifacts_dir: str = None, smoke: bool = False) -> dict:
+    """Tier 2 selectivity entrypoint, wired into run.py.
+
+    Gracefully skips (returns None) if the variant-level ChEMBL table isn't
+    present yet, so `run.py all` never crashes on a fresh checkout.
+    """
+    artifacts_dir = artifacts_dir or ARTIFACTS
+    os.makedirs(artifacts_dir, exist_ok=True)
+
+    by_variant_path = os.path.join(PROC, "egfr_by_variant.parquet")
+    if not os.path.exists(by_variant_path):
+        print(f"[selectivity] skipping: {by_variant_path} not found (run `run.py data` first).")
+        return None
+
+    by_variant = pd.read_parquet(by_variant_path)
 
     sel = build_selectivity_table(by_variant)
-    sel.to_csv(os.path.join(ARTIFACTS, "selectivity.csv"), index=False)
+    sel.to_csv(os.path.join(artifacts_dir, "selectivity.csv"), index=False)
     hits = classify_hits(sel)
 
     feat_bv_path = os.path.join(PROC, "egfr_features_by_variant.parquet")
@@ -169,7 +181,7 @@ def main() -> None:
     feat_wt_path = os.path.join(PROC, "egfr_features.parquet")
     if os.path.exists(feat_wt_path) and model_info.get("trained"):
         scores = score_all_compounds(pd.read_parquet(feat_wt_path))
-        scores.to_csv(os.path.join(ARTIFACTS, "mutant_activity_scores.csv"), index=False)
+        scores.to_csv(os.path.join(artifacts_dir, "mutant_activity_scores.csv"), index=False)
 
     summary = {
         "seed": SEED,
@@ -179,7 +191,7 @@ def main() -> None:
         "mutant_activity_model": model_info,
         "variant_row_counts": by_variant["variant"].value_counts().to_dict(),
     }
-    with open(os.path.join(ARTIFACTS, "selectivity_summary.json"), "w") as f:
+    with open(os.path.join(artifacts_dir, "selectivity_summary.json"), "w") as f:
         json.dump(summary, f, indent=2, default=float)
 
     print(f"[OK] selectivity table: {len(sel)} compounds -> artifacts/selectivity.csv")
@@ -193,6 +205,12 @@ def main() -> None:
         print(f"[OK] mutant-activity model ROC-AUC {m['roc_auc']['value']:.3f} "
               f"[{m['roc_auc']['ci_low']:.3f},{m['roc_auc']['ci_high']:.3f}]  "
               f"(y-scramble {model_info['y_scramble_control']['roc_auc']['value']:.3f})")
+
+    return summary
+
+
+def main() -> None:
+    run_selectivity()
 
 
 if __name__ == "__main__":
